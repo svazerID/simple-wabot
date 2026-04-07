@@ -73,6 +73,9 @@ export async function handler(chatUpdate) {
       } catch {}
     }
 
+    // Helper: normalisasi JID dari participant (penting untuk deteksi admin)
+    const getJid = (sender) => this.getJid ? this.getJid(sender) : this.decodeJid(sender);
+
     /* ── Auto-set owner perms ───────── */
     if (isROwner) {
       global.db.data.users[m.sender].premium     = true;
@@ -111,13 +114,18 @@ export async function handler(chatUpdate) {
     let usedPrefix;
     const _user = global.db.data.users[m.sender];
 
-    const groupMetadata = (m.isGroup ? (global.store?.groupMetadata?.[m.chat] || {}) : {}) || {};
+    const groupMetadata = (m.isGroup ? ((global.store?.groupMetadata?.[m.chat]) || (await this.groupMetadata(m.chat).catch(() => null)) || {}) : {}) || {};
     const participants  = (m.isGroup ? groupMetadata.participants : []) || [];
-    const user          = (m.isGroup ? participants.find((u) => this.decodeJid(u.id) === m.sender) : {}) || {};
+    const user          = (m.isGroup ? participants.find((u) => this.decodeJid(u.id) === getJid(m.sender)) : {}) || {};
     const bot           = (m.isGroup ? participants.find((u) => this.decodeJid(u.id) === this.decodeJid(this.user?.id)) : {}) || {};
     const isRAdmin      = user?.admin === 'superadmin' || false;
     const isAdmin       = isRAdmin || user?.admin === 'admin' || false;
     const isBotAdmin    = !!bot?.admin;
+
+    // Update store dengan metadata terbaru
+    if (m.isGroup && groupMetadata.id) {
+      global.store.groupMetadata[m.chat] = groupMetadata;
+    }
 
     for (const name in global.plugins) {
       let plugin = global.plugins[name];
