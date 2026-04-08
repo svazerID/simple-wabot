@@ -54,18 +54,28 @@ export async function handler(chatUpdate) {
 
     /* ── Roles ─────────────────────── */
     // Normalisasi sender JID
-    const senderJid = m.sender.endsWith('@lid') 
+    let senderJid = m.sender.endsWith('@lid')
       ? (this.getJid ? this.getJid(m.sender) : this.decodeJid(m.sender))
       : this.decodeJid(m.sender);
 
     const isROwner = [
       this.decodeJid(global.conn.user.id),
       ...global.owner.map((a) => {
-        // Handle format: '628xxx' atau ['628xxx', 'Name'] atau ['628xxx', 'Name', 'true']
         const num = Array.isArray(a) ? a[0] : a;
         return num.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
       }),
+      // Juga cek dalam format LID
+      ...global.owner.map((a) => {
+        const num = Array.isArray(a) ? a[0] : a;
+        return num.replace(/[^0-9]/g, '') + '@lid';
+      }),
     ].includes(senderJid);
+    
+    // Debug: log owner detection
+    if (!m.isGroup) {
+      console.log(`[DEBUG] isROwner: ${isROwner}`);
+      console.log(`[DEBUG] Owner list: ${global.owner.map(a => Array.isArray(a) ? a[0] : a).join(', ')}`);
+    }
     const isOwner = isROwner || m.fromMe;
     const isMods  = global.db.data.users[senderJid]?.moderator || false;
     const isPrems = global.db.data.users[senderJid]?.premium   || false;
