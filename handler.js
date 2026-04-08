@@ -53,14 +53,23 @@ export async function handler(chatUpdate) {
     try { initDatabase(m); } catch (e) { console.error(e); }
 
     /* ── Roles ─────────────────────── */
+    // Normalisasi sender JID
+    const senderJid = m.sender.endsWith('@lid') 
+      ? (this.getJid ? this.getJid(m.sender) : this.decodeJid(m.sender))
+      : this.decodeJid(m.sender);
+
     const isROwner = [
       this.decodeJid(global.conn.user.id),
-      ...global.owner.map((a) => a + '@s.whatsapp.net'),
-    ].includes(m.sender);
+      ...global.owner.map((a) => {
+        // Handle format: '628xxx' atau ['628xxx', 'Name'] atau ['628xxx', 'Name', 'true']
+        const num = Array.isArray(a) ? a[0] : a;
+        return num.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
+      }),
+    ].includes(senderJid);
     const isOwner = isROwner || m.fromMe;
-    const isMods  = global.db.data.users[m.sender]?.moderator || false;
-    const isPrems = global.db.data.users[m.sender]?.premium   || false;
-    const isBans  = global.db.data.users[m.sender]?.banned    || false;
+    const isMods  = global.db.data.users[senderJid]?.moderator || false;
+    const isPrems = global.db.data.users[senderJid]?.premium   || false;
+    const isBans  = global.db.data.users[senderJid]?.banned    || false;
     const isWhitelist = global.db.data.chats[m.chat]?.whitelist || false;
 
     /* ── Group metadata ─────────────── */
@@ -73,17 +82,14 @@ export async function handler(chatUpdate) {
       } catch {}
     }
 
-    // Helper: normalisasi JID dari participant (penting untuk deteksi admin)
-    const getJid = (sender) => this.getJid ? this.getJid(sender) : this.decodeJid(sender);
-
     /* ── Auto-set owner perms ───────── */
     if (isROwner) {
-      global.db.data.users[m.sender].premium     = true;
-      global.db.data.users[m.sender].premiumDate = 'PERMANENT';
-      global.db.data.users[m.sender].limit       = 'PERMANENT';
-      global.db.data.users[m.sender].moderator   = true;
+      global.db.data.users[senderJid].premium     = true;
+      global.db.data.users[senderJid].premiumDate = 'PERMANENT';
+      global.db.data.users[senderJid].limit       = 'PERMANENT';
+      global.db.data.users[senderJid].moderator   = true;
     } else if (isPrems) {
-      global.db.data.users[m.sender].limit = 'PERMANENT';
+      global.db.data.users[senderJid].limit = 'PERMANENT';
     } else if (!isROwner && isBans) return;
 
     /* ── Self / gconly guards ───────── */
@@ -101,8 +107,16 @@ export async function handler(chatUpdate) {
       }, 1000 * 5);
     }
 
-    global.db.data.users[m.sender].online = Date.now();
-    global.db.data.users[m.sender].chat += 1;
+    // Pastikan user object ada sebelum diakses
+    if (!global.db.data.users[senderJid]) {
+      global.db.data.users[senderJid] = {
+        exp: 0, limit: 0, premium: false, premiumDate: null, moderator: false, banned: false,
+        online: 0, chat: 0, registered: false, registeredTime: 0, level: 0,
+      };
+    }
+
+    global.db.data.users[senderJid].online = Date.now();
+    global.db.data.users[senderJid].chat += 1;
     if (global.opts?.autoread) await this.readMessages([m.key]);
     if (global.opts?.nyimak) return;
 
@@ -112,12 +126,25 @@ export async function handler(chatUpdate) {
 
     /* ── Plugin loop ────────────────── */
     let usedPrefix;
-    const _user = global.db.data.users[m.sender];
+    const _user = global.db.data.users[senderJid];
 
     const groupMetadata = (m.isGroup ? ((global.store?.groupMetadata?.[m.chat]) || (await this.groupMetadata(m.chat).catch(() => null)) || {}) : {}) || {};
     const participants  = (m.isGroup ? groupMetadata.participants : []) || [];
-    const user          = (m.isGroup ? participants.find((u) => this.decodeJid(u.id) === getJid(m.sender)) : {}) || {};
-    const bot           = (m.isGroup ? participants.find((u) => this.decodeJid(u.id) === this.decodeJid(this.user?.id)) : {}) || {};
+    
+    // FIX: Gunakan conn.getJid() untuk match participant
+    const userJid = this.getJid ? this.getJid(m.sender) : senderJid;
+    
+    const user          = (m.isGroup ? participants.find((u) => {
+      const decodedId = this.decodeJid(u.id);
+      const decodedPhone = this.decodeJid(u.phoneNumber || '');
+      return decodedId === userJid || decodedPhone === userJid;
+    }) : {}) || {};
+    const bot           = (m.isGroup ? participants.find((u) => {
+      const decodedId = this.decodeJid(u.id);
+      const decodedPhone = this.decodeJid(u.phoneNumber || '');
+      const botJid = this.decodeJid(this.user?.id);
+      return decodedId === botJid || decodedPhone === botJid;
+    }) : {}) || {};
     const isRAdmin      = user?.admin === 'superadmin' || false;
     const isAdmin       = isRAdmin || user?.admin === 'admin' || false;
     const isBotAdmin    = !!bot?.admin;
@@ -300,10 +327,17 @@ export async function handler(chatUpdate) {
 
     /* Exp & limit update */
     if (m) {
-      const u = global.db.data.users[m.sender];
-      if (u) {
-        u.exp   += m.exp   || 0;
-        u.limit -= m.limit ? 1 : 0;
+      try {
+        const finalSenderJid = m.sender.endsWith('@lid') 
+          ? (this.getJid ? this.getJid(m.sender) : this.decodeJid(m.sender))
+          : this.decodeJid(m.sender);
+        const u = global.db.data.users[finalSenderJid];
+        if (u) {
+          u.exp   += m.exp   || 0;
+          u.limit -= m.limit ? 1 : 0;
+        }
+      } catch (e) {
+        console.error('[Handler] Error updating user data:', e);
       }
     }
 
@@ -315,35 +349,89 @@ export async function handler(chatUpdate) {
    PARTICIPANTS UPDATE (welcome / bye)
 ══════════════════════════════════════ */
 export async function participantsUpdate({ id, participants, action }) {
-  if (global.opts?.self) return;
+  // Helper untuk kirim debug ke owner
+  const sendDebug = async (msg) => {
+    for (const ow of global.owner) {
+      const ownerNum = Array.isArray(ow) ? ow[0] : ow;
+      const ownerJid = ownerNum.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
+      try { await this.sendMessage(ownerJid, { text: `*[DEBUG WELCOME]*\n${msg}` }); } catch {}
+    }
+  };
+  if (global.db.data == null) await global.loadDatabase();
   const chat = global.db.data.chats[id] || {};
 
   switch (action) {
     case 'add':
     case 'remove': {
-      if (!chat.welcome) break;
+      if (chat.welcome === false) return
       let meta;
-      try { meta = await this.groupMetadata(id); } catch { break; }
+      try { 
+        meta = await this.groupMetadata(id); 
+      } catch (e) { 
+        break; 
+      }
 
       for (const user of participants) {
-        const nama   = await this.getName(user);
+        // FIX: user dari event participantsUpdate adalah Object
+        // Format: { id: '...@lid', phoneNumber: '...@s.whatsapp.net', admin: null }
+        // PRIORITAS: phoneNumber (JID normal) sebelum id (LID)
+        const rawId = user?.phoneNumber || user?.id || user;        
+        // Normalisasi JID untuk hindari LID issue
+        const userJid = this.getJid ? this.getJid(rawId) : this.decodeJid(rawId);
+        const userNumber = userJid.split('@')[0] || rawId.split('@')[0];
+
+        // FIX: Cari user di meta.participants untuk ambil 'notify' (Nama)
+        const pMeta = meta.participants?.find(p =>
+          p.id === rawId ||
+          p.phoneNumber === userJid ||
+          p.id?.includes(userNumber)
+        );
+
+        // Prioritas nama: 1. notify dari meta.participants, 2. getName() dari store
+        let nama = pMeta?.notify;
+        if (!nama) {
+          nama = await this.getName(userJid).catch(() => userNumber);
+        }
+        
+        // Bersihkan nama jika formatnya JID/LID
+        if (nama && nama.includes('@')) {
+          nama = nama.split('@')[0];
+        }
+
+        // Jika masih kosong atau sama dengan nomor, pakai nomor
+        if (!nama || nama === userNumber) nama = userNumber;
+        
+
         const gpname = meta.subject;
         const member = meta.participants.length;
-        const time   = moment.tz('Asia/Jakarta').format('HH:mm:ss');
+        const time = moment.tz('Asia/Jakarta').format('HH:mm:ss');
 
         let pp = global.icon;
-        try { pp = await this.profilePictureUrl(user, 'image'); } catch {}
+        pp = await this.profilePictureUrl(userJid, 'image');
 
-        const text = action === 'add'
-          ? (chat.sWelcome || `┌─⭓「 *WELCOME* 」\n│ *Nama:* ${nama}\n│ *Group:* ${gpname}\n│ *Member:* ${member}\n│ *Waktu:* ${time}\n└───────────────⭓\n> Selamat datang @${user.split('@')[0]}!`)
-          : (chat.sBye     || `┌─⭓「 *GOODBYE* 」\n│ *Nama:* ${nama}\n│ *Group:* ${gpname}\n│ *Member:* ${member}\n│ *Waktu:* ${time}\n└───────────────⭓\n> Sampai jumpa @${user.split('@')[0]}!`);
+        let defaultText = action === 'add'
+          ? `┌─⭓「 *WELCOME* 」\n│ Number:* ${nama}\n│ *Group:* ${gpname}\n│ *Member:* ${member}\n│ *Waktu:* ${time}\n└───────────────⭓\nSelamat datang @${userNumber}!`
+          : `┌─⭓「 *GOODBYE* 」\n│ Number:* ${nama}\n│ *Group:* ${gpname}\n│ *Member:* ${member}\n│ *Waktu:* ${time}\n└───────────────⭓\nSampai jumpa @${userNumber}!`;
+
+        // Ambil custom message atau pakai default
+        let text = action === 'add' ? (chat.sWelcome || defaultText) : (chat.sBye || defaultText);
+
+        // Replace placeholder
+        text = text
+          .replace(/@user/gi, `@${userNumber}`)
+          .replace(/@nama/gi, nama)
+          .replace(/@group/gi, gpname)
+          .replace(/@member/gi, String(member))
+          .replace(/@waktu/gi, time)
+          .replace(/@desc/gi, meta.desc || '-');
 
         await this.sendMessage(id, {
           text,
+          mentions: [userJid],
           contextInfo: {
-            mentionedJid: [user],
+            mentionedJid: [userJid],
             externalAdReply: {
-              title: action === 'add' ? `Welcome, ${nama}!` : `Goodbye, ${nama}!`,
+              title: action === 'add' ? `Welcome notification!` : `Goodbye, notification!`,
               body: global.wm,
               thumbnailUrl: pp,
               mediaType: 1,
@@ -356,12 +444,16 @@ export async function participantsUpdate({ id, participants, action }) {
     }
     case 'promote':
     case 'demote': {
-      if (!chat.detect) break;
+      if (chat.detect === false) break;
+      const user = participants[0];
+      const userJid = this.getJid ? this.getJid(user) : this.decodeJid(user);
+      const userNumber = userJid.split('@')[0];
+      
       const text = (action === 'promote'
-        ? (chat.sPromote || `@${participants[0].split('@')[0]} sekarang menjadi Admin`)
-        : (chat.sDemote  || `@${participants[0].split('@')[0]} tidak lagi Admin`)
-      ).replace('@user', `@${participants[0].split('@')[0]}`);
-      await this.sendMessage(id, { text, mentions: participants });
+        ? (chat.sPromote || `@${userNumber} sekarang menjadi Admin`)
+        : (chat.sDemote || `@${userNumber} tidak lagi Admin`)
+      );
+      await this.sendMessage(id, { text, mentions: [userJid] });
       break;
     }
   }
