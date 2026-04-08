@@ -385,32 +385,16 @@ export async function participantsUpdate({ id, participants, action }) {
         // FIX: user dari event participantsUpdate adalah Object
         // Format: { id: '...@lid', phoneNumber: '...@s.whatsapp.net', admin: null }
         // PRIORITAS: phoneNumber (JID normal) sebelum id (LID)
-        const rawId = user?.phoneNumber || user?.id || user;        
+        const rawId = user?.phoneNumber || user?.id || user;
         // Normalisasi JID untuk hindari LID issue
-        const userJid = this.getJid ? this.getJid(rawId) : this.decodeJid(rawId);
-        const userNumber = userJid.split('@')[0] || rawId.split('@')[0];
-
-        // FIX: Cari user di meta.participants untuk ambil 'notify' (Nama)
-        const pMeta = meta.participants?.find(p =>
-          p.id === rawId ||
-          p.phoneNumber === userJid ||
-          p.id?.includes(userNumber)
-        );
-
-        // Prioritas nama: 1. notify dari meta.participants, 2. getName() dari store
-        let nama = pMeta?.notify;
-        if (!nama) {
-          nama = await this.getName(userJid).catch(() => userNumber);
+        let userJid = this.getJid ? this.getJid(rawId) : this.decodeJid(rawId);
+        
+        // FIX: Fallback ke rawId jika userJid masih @lid (sama seperti profile.js)
+        if (userJid.endsWith('@lid')) {
+          userJid = rawId;
         }
         
-        // Bersihkan nama jika formatnya JID/LID
-        if (nama && nama.includes('@')) {
-          nama = nama.split('@')[0];
-        }
-
-        // Jika masih kosong atau sama dengan nomor, pakai nomor
-        if (!nama || nama === userNumber) nama = userNumber;
-        
+        const userNumber = userJid.split('@')[0];
 
         const gpname = meta.subject;
         const member = meta.participants.length;
@@ -420,8 +404,8 @@ export async function participantsUpdate({ id, participants, action }) {
         pp = await this.profilePictureUrl(userJid, 'image');
 
         let defaultText = action === 'add'
-          ? `┌─⭓「 *WELCOME* 」\n│ Number:* ${nama}\n│ *Group:* ${gpname}\n│ *Member:* ${member}\n│ *Waktu:* ${time}\n└───────────────⭓\nSelamat datang @${userNumber}!`
-          : `┌─⭓「 *GOODBYE* 」\n│ Number:* ${nama}\n│ *Group:* ${gpname}\n│ *Member:* ${member}\n│ *Waktu:* ${time}\n└───────────────⭓\nSampai jumpa @${userNumber}!`;
+          ? `┌─⭓「 *WELCOME* 」\n│ *User:* @user\n│ *Group:* ${gpname}\n│ *Member:* ${member}\n│ *Waktu:* ${time}\n└───────────────⭓\nSelamat datang!`
+          : `┌─⭓「 *GOODBYE* 」\n│ *User:* @user\n│ *Group:* ${gpname}\n│ *Member:* ${member}\n│ *Waktu:* ${time}\n└───────────────⭓\nSampai jumpa!`;
 
         // Ambil custom message atau pakai default
         let text = action === 'add' ? (chat.sWelcome || defaultText) : (chat.sBye || defaultText);
@@ -429,7 +413,6 @@ export async function participantsUpdate({ id, participants, action }) {
         // Replace placeholder
         text = text
           .replace(/@user/gi, `@${userNumber}`)
-          .replace(/@nama/gi, nama)
           .replace(/@group/gi, gpname)
           .replace(/@member/gi, String(member))
           .replace(/@waktu/gi, time)
